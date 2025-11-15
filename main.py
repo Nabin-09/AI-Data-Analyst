@@ -16,7 +16,9 @@ def extract_schema(db_url) :
 
     return json.dumps(schema)
     
-    
+    #This is extract Schema
+
+
 # Text to SQL (LLM with Ollama)
 
 # Build StreamLit frontend 
