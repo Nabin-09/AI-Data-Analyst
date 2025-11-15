@@ -55,6 +55,5 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 
 
-# Enter dummt data
-
+# Enter dummy data
 
