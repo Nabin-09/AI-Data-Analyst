@@ -2,17 +2,17 @@
 
 from sqlalchemy import create_engine, inspect
 import json
-
+import sqlite3  
 import warnings
+import re
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater")
-
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import OllamaLLM
 
 db_url = 'sqlite:///amazon.db'
 
-def extract_schema(db_url) : 
+def extract_schema(db_url): 
     engine = create_engine(db_url)
     inspector = inspect(engine)
     schema = {}
@@ -22,16 +22,25 @@ def extract_schema(db_url) :
         schema[table_name] = [col['name'] for col in columns]
 
     return json.dumps(schema)
+
+def parse_sql_from_response(raw_response):
+    """Extract SQL query from model response, removing thinking process"""
+    # DeepSeek R1 often includes <think>...</think> tags
+    # Remove thinking tags if present
+    response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
     
- #This is extract Schema
+    # Extract SQL query (look for SELECT, INSERT, UPDATE, DELETE)
+    sql_pattern = r'(SELECT.*?;|INSERT.*?;|UPDATE.*?;|DELETE.*?;)'
+    matches = re.findall(sql_pattern, response, re.IGNORECASE | re.DOTALL)
+    
+    if matches:
+        return matches[0].strip()
+    
+    # Fallback: return cleaned response
+    return response.strip()
 
-#Step 2 : System Prompt 
-
-
-def text_to_sql(schema , prompt):
-
+def text_to_sql(schema, prompt):
     SYSTEM_PROMPT = """
-
     You are an expert SQL query generator with deep knowledge of database design, optimization, and SQL syntax across multiple database systems. Given a database schema and a user prompt, generate a valid, efficient SQL query that precisely answers the prompt.
 
     **Core Requirements:**
@@ -75,13 +84,6 @@ def text_to_sql(schema , prompt):
     - Format complex queries with appropriate line breaks for readability
     - End with a semicolon
 
-    **Example Schema Reference:**
-    ```
-    Tables: users (id, name, email, created_at), orders (id, user_id, total, order_date)
-    Prompt: "Show me the top 5 customers by total spending"
-    Output: SELECT u.name, SUM(o.total) AS total_spent FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name ORDER BY total_spent DESC LIMIT 5;
-    ```
-
     **Critical Constraints:**
     - Never use tables or columns not in the schema
     - Never include explanatory text before or after the query
@@ -90,33 +92,46 @@ def text_to_sql(schema , prompt):
 
     Generate the SQL query now.
     """
-    # Text to SQL (LLM with Ollama)
 
     prompt_template = ChatPromptTemplate.from_messages([
-        ('system' , SYSTEM_PROMPT),
-        ('user' , 'Schema:\n{schema}\n\nQuestion : {user_prompt}\n\nSQL Query:')
+        ('system', SYSTEM_PROMPT),
+        ('user', 'Schema:\n{schema}\n\nQuestion: {user_prompt}\n\nSQL Query:')
     ])
 
+    # FIX: Changed model name to 'deepseek-r1' (check with 'ollama list')
     model = OllamaLLM(model='deepseek-r1:8b')
 
     chain = prompt_template | model
 
-    raw = chain.invoke({'schema': schema , 'user_prompt' : prompt})
-    return raw
+    raw = chain.invoke({'schema': schema, 'user_prompt': prompt})
+    
+    # FIX: Parse SQL from response
+    sql_query = parse_sql_from_response(raw)
+    return sql_query
 
-schema = extract_schema(db_url)
-prompt  = "5 products starting from a?"
-
-
-sql_query = text_to_sql(schema , prompt)
-
-import sqlite3
-db_path = 'amazon.db'
-conn = sqlite3.connect(db_path)
-cur = conn.cursor()
-
-results = cur.execute(sql_query)
-
-
-print('RESULTS' , results.fetchall())
-
+def get_data_from_database(prompt):
+    """Execute SQL query with proper error handling"""
+    try:
+        schema = extract_schema(db_url)
+        sql_query = text_to_sql(schema, prompt)
+        
+        print(f"Generated SQL: {sql_query}")  # Debug log
+        
+        db_path = 'amazon.db'
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        
+        # FIX: Add error handling for SQL execution
+        try:
+            res = cur.execute(sql_query)
+            results = res.fetchall()
+            return {'success': True, 'data': results, 'query': sql_query}
+        except sqlite3.Error as e:
+            return {'success': False, 'error': str(e), 'query': sql_query}
+        finally:
+            # FIX: Always close connection
+            cur.close()
+            conn.close()
+            
+    except Exception as e:
+        return {'success': False, 'error': f"System error: {str(e)}", 'query': None}
