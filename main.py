@@ -107,8 +107,16 @@ def text_to_sql(schema , prompt):
 schema = extract_schema(db_url)
 prompt  = "5 products starting from a?"
 
-print(text_to_sql(schema, prompt))
+
+sql_query = text_to_sql(schema , prompt)
+
+import sqlite3
+db_path = 'amazon.db'
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+
+results = cur.execute(sql_query)
 
 
+print('RESULTS' , results.fetchall())
 
-# Build StreamLit frontend 
